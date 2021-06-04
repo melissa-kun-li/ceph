@@ -5,6 +5,7 @@ import uuid
 from collections import defaultdict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Optional, List, cast, Dict, Any, Union, Tuple, Iterator
+from io import StringIO
 
 from cephadm import remotes
 
@@ -13,6 +14,11 @@ try:
     import execnet.gateway_bootstrap
 except ImportError:
     remoto = None
+
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 from ceph.deployment import inventory
 from ceph.deployment.drive_group import DriveGroupSpec
@@ -1334,45 +1340,85 @@ class CephadmServe:
 
         self.mgr.offline_hosts_remove(host)
 
+        if not addr:
+            raise OrchestratorError("host address is empty")
+
+        assert self.mgr.ssh_user
+        n = self.mgr.ssh_user + '@' + addr
+        self.log.debug("Opening connection to {} with ssh options '{}'".format(
+            n, self.mgr_ssh_options))
+
+        paramiko_logger = paramiko.util.logging.getLogger()
+        paramiko_logger.setLevel(logging.DEBUG)
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
         try:
-            try:
-                if not addr:
-                    raise OrchestratorError("host address is empty")
-                conn, connr = self.mgr._get_connection(addr)
-            except OSError as e:
-                self.mgr._reset_con(host)
-                msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there: {str(e)}"
-                raise execnet.gateway_bootstrap.HostNotFound(msg)
-
-            yield (conn, connr)
-
-        except execnet.gateway_bootstrap.HostNotFound as e:
-            # this is a misleading exception as it seems to be thrown for
-            # any sort of connection failure, even those having nothing to
-            # do with "host not found" (e.g., ssh key permission denied).
-            self.mgr.offline_hosts.add(host)
-            self.mgr._reset_con(host)
-
-            user = self.mgr.ssh_user if self.mgr.mode == 'root' else 'cephadm'
-            if str(e).startswith("Can't communicate"):
-                msg = str(e)
-            else:
-                msg = f'''Failed to connect to {host} ({addr}).
-Please make sure that the host is reachable and accepts connections using the cephadm SSH key
-
-To add the cephadm SSH key to the host:
-> ceph cephadm get-pub-key > ~/ceph.pub
-> ssh-copy-id -f -i ~/ceph.pub {user}@{addr}
-
-To check that the host is reachable open a new shell with the --no-hosts flag:
-> cephadm shell --no-hosts
-
-Then run the following:
-> ceph cephadm get-ssh-config > ssh_config
-> ceph config-key get mgr/cephadm/ssh_identity_key > ~/cephadm_private_key
-> chmod 0600 ~/cephadm_private_key
-> ssh -F ssh_config -i ~/cephadm_private_key {user}@{addr}'''
-            raise OrchestratorError(msg) from e
-        except Exception as ex:
-            self.log.exception(ex)
+            # start capturing paramiko logging
+            log_string = StringIO()
+            ch = logging.StreamHandler(log_string)
+            ch.setLevel(logging.DEBUG)
+            paramiko_logger.addHandler(ch)
+            client.connect(addr, 
+                           username=self.mgr.ssh_user, 
+                           key_filename='~/cephadm_private_key')
+            paramiko_logger.removeHandler(ch)
+            log_string.flush()
+            yield client
+        except OSError as e:
+            paramiko_logger.removeHandler(ch)
+            client.close()
+            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
+            raise OrchestratorError(msg)
+        except paramiko.ssh_exception.AuthenticationException as e:
+            # run check host command, if check host command fails, then return captured log output into standard output
+            log_output = log_string.getvalue()
+            log_string.flush()
+            self.log.debug(log_output)
+            paramiko_logger.removeHandler(ch)
+            client.close()
             raise
+
+
+
+
+#         try:
+#             try:
+#                 if not addr:
+#                     raise OrchestratorError("host address is empty")
+#                 conn, connr = self.mgr._get_connection(addr)
+#             except OSError as e:
+#                 self.mgr._reset_con(host)
+#                 msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there: {str(e)}"
+#                 raise execnet.gateway_bootstrap.HostNotFound(msg)
+
+#             yield (conn, connr)
+
+#         except execnet.gateway_bootstrap.HostNotFound as e:
+#             # this is a misleading exception as it seems to be thrown for
+#             # any sort of connection failure, even those having nothing to
+#             # do with "host not found" (e.g., ssh key permission denied).
+#             self.mgr.offline_hosts.add(host)
+#             self.mgr._reset_con(host)
+
+#             user = self.mgr.ssh_user if self.mgr.mode == 'root' else 'cephadm'
+#             if str(e).startswith("Can't communicate"):
+#                 msg = str(e)
+#             else:
+#                 msg = f'''Failed to connect to {host} ({addr}).
+# Please make sure that the host is reachable and accepts connections using the cephadm SSH key
+
+# To add the cephadm SSH key to the host:
+# > ceph cephadm get-pub-key > ~/ceph.pub
+# > ssh-copy-id -f -i ~/ceph.pub {user}@{host}
+
+# To check that the host is reachable:
+# > ceph cephadm get-ssh-config > ssh_config
+# > ceph config-key get mgr/cephadm/ssh_identity_key > ~/cephadm_private_key
+# > chmod 0600 ~/cephadm_private_key
+# > ssh -F ssh_config -i ~/cephadm_private_key {user}@{host}'''
+#             raise OrchestratorError(msg) from e
+#         except Exception as ex:
+#             self.log.exception(ex)
+#             raise
