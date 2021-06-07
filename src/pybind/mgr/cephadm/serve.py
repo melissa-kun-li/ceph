@@ -1346,7 +1346,7 @@ class CephadmServe:
         assert self.mgr.ssh_user
         n = self.mgr.ssh_user + '@' + addr
         self.log.debug("Opening connection to {} with ssh options '{}'".format(
-            n, self.mgr_ssh_options))
+            n, self.mgr._ssh_options))
 
         paramiko_logger = paramiko.util.logging.getLogger()
         paramiko_logger.setLevel(logging.DEBUG)
@@ -1362,7 +1362,7 @@ class CephadmServe:
             paramiko_logger.addHandler(ch)
             client.connect(addr, 
                            username=self.mgr.ssh_user, 
-                           key_filename='~/cephadm_private_key')
+                           key_filename='~/.ssh/id_rsa')
             paramiko_logger.removeHandler(ch)
             log_string.flush()
             yield client
