@@ -1362,15 +1362,33 @@ class CephadmServe:
             paramiko_logger.addHandler(ch)
             client.connect(addr, 
                            username=self.mgr.ssh_user, 
-                           key_filename='~/.ssh/id_rsa')
-            paramiko_logger.removeHandler(ch)
-            log_string.flush()
+                           key_filename=self.mgr.tkey.name)
+
+            # client.connect(addr, 
+            #                username=self.mgr.ssh_user, 
+            #                key_filename=self.mgr.ssh_key)
             yield client
+        # TypeError: 'SSHClient' object is not iterable
+        except TypeError as e:
+            log_output = log_string.getvalue()
+            msg = str(e) + '\n'
+            msg += log_output
+            log_string.flush()
+            paramiko_logger.removeHandler(ch)
+            client.close()
+            raise OrchestratorError(msg)
         except OSError as e:
             paramiko_logger.removeHandler(ch)
             client.close()
             msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
             raise OrchestratorError(msg)
+        # DEBUGGING BELOW, will rewrite later:
+        except paramiko.ssh_exception.SSHException as e:
+            log_output = log_string.getvalue()
+            log_string.flush()
+            paramiko_logger.removeHandler(ch)
+            client.close()
+            raise OrchestratorError(log_output)
         except paramiko.ssh_exception.AuthenticationException as e:
             # run check host command, if check host command fails, then return captured log output into standard output
             log_output = log_string.getvalue()
@@ -1379,9 +1397,16 @@ class CephadmServe:
             paramiko_logger.removeHandler(ch)
             client.close()
             raise
+  
+#     @contextmanager
+#     def _remote_connection(self,
+#                            host: str,
+#                            addr: Optional[str] = None,
+#                            ) -> Iterator[Tuple["BaseConnection", Any]]:
+#         if not addr and host in self.mgr.inventory:
+#             addr = self.mgr.inventory.get_addr(host)
 
-
-
+#         self.mgr.offline_hosts_remove(host)
 
 #         try:
 #             try:
@@ -1411,13 +1436,16 @@ class CephadmServe:
 
 # To add the cephadm SSH key to the host:
 # > ceph cephadm get-pub-key > ~/ceph.pub
-# > ssh-copy-id -f -i ~/ceph.pub {user}@{host}
+# > ssh-copy-id -f -i ~/ceph.pub {user}@{addr}
 
-# To check that the host is reachable:
+# To check that the host is reachable open a new shell with the --no-hosts flag:
+# > cephadm shell --no-hosts
+
+# Then run the following:
 # > ceph cephadm get-ssh-config > ssh_config
 # > ceph config-key get mgr/cephadm/ssh_identity_key > ~/cephadm_private_key
 # > chmod 0600 ~/cephadm_private_key
-# > ssh -F ssh_config -i ~/cephadm_private_key {user}@{host}'''
+# > ssh -F ssh_config -i ~/cephadm_private_key {user}@{addr}'''
 #             raise OrchestratorError(msg) from e
 #         except Exception as ex:
 #             self.log.exception(ex)

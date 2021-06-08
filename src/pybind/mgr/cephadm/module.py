@@ -642,16 +642,16 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         self.ssh_pub = ssh_pub
         self.ssh_key = ssh_key
         if ssh_key and ssh_pub:
-            tkey = tempfile.NamedTemporaryFile(prefix='cephadm-identity-')
-            tkey.write(ssh_key.encode('utf-8'))
-            os.fchmod(tkey.fileno(), 0o600)
-            tkey.flush()  # make visible to other processes
-            tpub = open(tkey.name + '.pub', 'w')
+            self.tkey = tempfile.NamedTemporaryFile(prefix='cephadm-identity-')
+            self.tkey.write(ssh_key.encode('utf-8'))
+            os.fchmod(self.tkey.fileno(), 0o600)
+            self.tkey.flush()  # make visible to other processes
+            tpub = open(self.tkey.name + '.pub', 'w')
             os.fchmod(tpub.fileno(), 0o600)
             tpub.write(ssh_pub)
             tpub.flush()  # make visible to other processes
-            temp_files += [tkey, tpub]
-            ssh_options += ['-i', tkey.name]
+            temp_files += [self.tkey, tpub]
+            ssh_options += ['-i', self.tkey.name]
 
         self._temp_files = temp_files
         if ssh_options:
@@ -794,6 +794,8 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             try:
                 subprocess.check_call([
                     '/usr/bin/ssh-keygen',
+                    '-t', 'rsa',
+                    'm', 'PEM',
                     '-C', 'ceph-%s' % self._cluster_fsid,
                     '-N', '',
                     '-f', path
