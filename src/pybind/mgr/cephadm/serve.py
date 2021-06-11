@@ -1164,7 +1164,8 @@ class CephadmServe:
         bypass_image = ('cephadm-exporter',)
 
         with self._remote_connection(host, addr) as tpl:
-            conn, connr = tpl
+            # conn, connr = tpl
+            conn = tpl
             assert image or entity
             # Skip the image check for daemons deployed that are not ceph containers
             if not str(entity).startswith(bypass_image):
@@ -1199,55 +1200,103 @@ class CephadmServe:
                 if stdin:
                     self.log.debug('stdin: %s' % stdin)
 
-                python = connr.choose_python()
+                # python = connr.choose_python()
+                python = 'python3'
+                # python = None
                 if not python:
                     raise RuntimeError(
                         'unable to find python on %s (tried %s in %s)' % (
                             host, remotes.PYTHONS, remotes.PATH))
-                try:
-                    out, err, code = remoto.process.check(
-                        conn,
-                        [python, self.mgr.cephadm_binary_path] + final_args,
-                        stdin=stdin.encode('utf-8') if stdin is not None else None)
+
+                # file = open(self.mgr.cephadm_binary_path, 'r') 
+                # final_args = ['check-host', '--expect-hostname', 'localhost.localdomain']
+                # self.mgr.cephadm_binary_path = '/var/lib/ceph/e01157b4-ca09-11eb-816d-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190'
+                
+                cmd = []
+                cmd.append(python)
+                cmd.append(self.mgr.cephadm_binary_path)
+                cmd = cmd + final_args
+                cmd = ' '.join(cmd)
+                try: 
+                    stdin, stdout, stderr = conn.exec_command(cmd)
+                    out = stdout.read()
+                    code = stdout.channel.recv_exit_status()
+                    # file = open(str(code), 'r') # returns 2
+                    err = ''
+                    for line in stderr:
+                        err += line
+                    # file = open(err, 'r') # output: python3: can't open file '/var/lib/ceph/209791a4-ca2d-11eb-be61-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190': [Errno 2] No such file or directory\n
                     if code == 2:
-                        out_ls, err_ls, code_ls = remoto.process.check(
-                            conn, ['ls', self.mgr.cephadm_binary_path])
-                        if code_ls == 2:
+                        ls_cmd = 'ls ' + self.mgr.cephadm_binary_path
+                        ls_stdin, ls_stdout, ls_stderr = conn.exec_command(ls_cmd)
+                        out = ls_stdout.read()
+                        ls_code = ls_stdout.channel.recv_exit_status()
+                        # file = open(str(ls_code), 'r') # returns 2
+                        err = ''
+                        for line in ls_stderr:
+                            err += line
+                        # file = open(err, 'r') # output: ls: cannot access '/var/lib/ceph/ee4ef962-ca2c-11eb-901a-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190': No such file or directory\n
+                        if ls_code == 2:
                             self._deploy_cephadm_binary_conn(conn, host)
-                            out, err, code = remoto.process.check(
-                                conn,
-                                [python, self.mgr.cephadm_binary_path] + final_args,
-                                stdin=stdin.encode('utf-8') if stdin is not None else None)
+                            stdin, stdout, stderr = conn.exec_command(cmd)
+                            out = stdout.read()
+                            # file = open(str(out), 'r') # empty is b''
+                            code = stdout.channel.recv_exit_status()
+                            # file = open(str(code), 'r') # returns 0
+                            err = ''
+                            for line in stderr:
+                                err += line
+                            # file = open(err, 'r') # the contents are: 'podman|docker (/usr/bin/docker) is present\nsystemctl is present\nlvcreate is present\nUnit chronyd.service is enabled and running\nHostname "localhost.localdomain" matches what is expected.\nHost looks OK\n'
 
+                # try:
+                #     out, err, code = remoto.process.check(
+                #         conn,
+                #         [python, self.mgr.cephadm_binary_path] + final_args,
+                #         stdin=stdin.encode('utf-8') if stdin is not None else None)
+                #     if code == 2:
+                #         out_ls, err_ls, code_ls = remoto.process.check(
+                #             conn, ['ls', self.mgr.cephadm_binary_path])
+                #         if code_ls == 2:
+                #             self._deploy_cephadm_binary_conn(conn, host)
+                #             out, err, code = remoto.process.check(
+                #                 conn,
+                #                 [python, self.mgr.cephadm_binary_path] + final_args,
+                #                 stdin=stdin.encode('utf-8') if stdin is not None else None)
+
+
+                # replace RuntimeError ? 
                 except RuntimeError as e:
-                    self.mgr._reset_con(host)
+                    self.mgr._reset_con(host) # NEED TO CHANGE
                     if error_ok:
                         return [], [str(e)], 1
                     raise
+        # NEED TO CHANGE BELOW
 
-            elif self.mgr.mode == 'cephadm-package':
-                try:
-                    out, err, code = remoto.process.check(
-                        conn,
-                        ['sudo', '/usr/bin/cephadm'] + final_args,
-                        stdin=stdin)
-                except RuntimeError as e:
-                    self.mgr._reset_con(host)
-                    if error_ok:
-                        return [], [str(e)], 1
-                    raise
-            else:
-                assert False, 'unsupported mode'
+            # elif self.mgr.mode == 'cephadm-package':
+            #     try:
+            #         out, err, code = remoto.process.check(
+            #             conn,
+            #             ['sudo', '/usr/bin/cephadm'] + final_args,
+            #             stdin=stdin)
+            #     except RuntimeError as e:
+            #         self.mgr._reset_con(host)
+            #         if error_ok:
+            #             return [], [str(e)], 1
+            #         raise
+            # else:
+            #     assert False, 'unsupported mode'
 
-            self.log.debug('code: %d' % code)
-            if out:
-                self.log.debug('out: %s' % '\n'.join(out))
-            if err:
-                self.log.debug('err: %s' % '\n'.join(err))
-            if code and not error_ok:
-                raise OrchestratorError(
-                    'cephadm exited with an error code: %d, stderr:%s' % (
-                        code, '\n'.join(err)))
+            # self.log.debug('code: %d' % code)
+            # if out:
+            #     self.log.debug('out: %s' % '\n'.join(out))
+            # if err:
+            #     self.log.debug('err: %s' % '\n'.join(err))
+            # if code and not error_ok:
+                # raise OrchestratorError(
+                #     'cephadm exited with an error code: %d, stderr:%s' % (
+                #         code, '\n'.join(err)))
+
+            out = []  # what is out supposed to be? 
             return out, err, code
 
     def _get_container_image_info(self, image_name: str) -> ContainerInspectInfo:
@@ -1292,25 +1341,55 @@ class CephadmServe:
         # Use tee (from coreutils) to create a copy of cephadm on the target machine
         self.log.info(f"Deploying cephadm binary to {host}")
         with self._remote_connection(host) as tpl:
-            conn, _connr = tpl
+            # conn, _connr = tpl
+            conn = tpl
             return self._deploy_cephadm_binary_conn(conn, host)
 
-    def _deploy_cephadm_binary_conn(self, conn: "BaseConnection", host: str) -> None:
-        _out, _err, code = remoto.process.check(
-            conn,
-            ['mkdir', '-p', f'/var/lib/ceph/{self.mgr._cluster_fsid}'])
+    def _deploy_cephadm_binary_conn(self, conn, host: str) -> None:
+
+        cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'        
+        stdin, stdout, stderr = conn.exec_command(cmd)
+        stdout.readlines()
+        code = stdout.channel.recv_exit_status()
+        # file = open(str(code), 'r') # returns 0
+        err = ''
+        for line in stderr:
+            err += line
         if code:
-            msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+            msg = f"Unable to deploy the cephadm binary to {host}: {err}"
             self.log.warning(msg)
             raise OrchestratorError(msg)
-        _out, _err, code = remoto.process.check(
-            conn,
-            ['tee', '-', self.mgr.cephadm_binary_path],
-            stdin=self.mgr._cephadm.encode('utf-8'))
+
+        cmd = f'tee - {self.mgr.cephadm_binary_path}'        
+        _stdin, _stdout, _stderr = conn.exec_command(cmd)
+        _stdin.write(self.mgr._cephadm)
+        _stdin.channel.shutdown_write()
+        _stdout.readlines()
+        code = _stdout.channel.recv_exit_status()
+        # file = open(str(exit_code), 'r') # returns 0
+        err = ''
+        for line in _stderr:
+            err += line
         if code:
-            msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+            msg = f"Unable to deploy the cephadm binary to {host}: {err}"
             self.log.warning(msg)
             raise OrchestratorError(msg)
+
+        # _out, _err, code = remoto.process.check(
+        #     conn,
+        #     ['mkdir', '-p', f'/var/lib/ceph/{self.mgr._cluster_fsid}'])
+        # if code:
+        #     msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+        #     self.log.warning(msg)
+        #     raise OrchestratorError(msg)
+        # _out, _err, code = remoto.process.check(
+        #     conn,
+        #     ['tee', '-', self.mgr.cephadm_binary_path],
+        #     stdin=self.mgr._cephadm.encode('utf-8'))
+        # if code:
+        #     msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+        #     self.log.warning(msg)
+        #     raise OrchestratorError(msg)
 
     def _write_remote_file(self,
                            host: str,
@@ -1367,9 +1446,12 @@ class CephadmServe:
             # client.connect(addr, 
             #                username=self.mgr.ssh_user, 
             #                key_filename=self.mgr.ssh_key)
+
+            # self.log.debug(str(type(conn)))
             yield client
         # TypeError: 'SSHClient' object is not iterable
         except TypeError as e:
+            logger.exception('Failed to add host')
             log_output = log_string.getvalue()
             msg = str(e) + '\n'
             msg += log_output
@@ -1382,7 +1464,6 @@ class CephadmServe:
             client.close()
             msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
             raise OrchestratorError(msg)
-        # DEBUGGING BELOW, will rewrite later:
         except paramiko.ssh_exception.SSHException as e:
             log_output = log_string.getvalue()
             log_string.flush()
@@ -1397,7 +1478,8 @@ class CephadmServe:
             paramiko_logger.removeHandler(ch)
             client.close()
             raise
-  
+    
+    
 #     @contextmanager
 #     def _remote_connection(self,
 #                            host: str,

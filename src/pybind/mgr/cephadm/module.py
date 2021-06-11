@@ -795,7 +795,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
                 subprocess.check_call([
                     '/usr/bin/ssh-keygen',
                     '-t', 'rsa',
-                    'm', 'PEM',
+                    '-m', 'PEM',
                     '-C', 'ceph-%s' % self._cluster_fsid,
                     '-N', '',
                     '-f', path
@@ -1419,9 +1419,9 @@ Then run the following:
         if code:
             # err will contain stdout and stderr, so we filter on the message text to
             # only show the errors
-            errors = [_i.replace("ERROR: ", "") for _i in err if _i.startswith('ERROR')]
+            # errors = [_i.replace("ERROR: ", "") for _i in err if _i.startswith('ERROR')]
             raise OrchestratorError('Host %s (%s) failed check(s): %s' % (
-                host, addr, errors))
+                host, addr, err.decode()))
         return ip_addr
 
     def _add_host(self, spec):
