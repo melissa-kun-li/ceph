@@ -1139,7 +1139,27 @@ class CephadmServe:
             self.log.exception(f'{msg}: {"".join(out)}')
             raise OrchestratorError(msg)
 
-    # def execute_command(self, conn, stdin, cmd, final_args):
+    def execute_command(self, conn, cmd, stdin: Optional[str] = ""):
+        _stdin, _stdout, _stderr = conn.exec_command(cmd)
+        if stdin:
+        # file = open(str(stdin), 'r')
+            _stdin.write(stdin)
+            _stdin.flush()
+            _stdin.channel.shutdown_write()
+        out = []
+        for line in _stdout:
+            out.append(line)
+        out = ''.join(out)
+        err = []
+        for line in _stderr:
+            err.append(line)
+        err = ''.join(err)
+        code = _stdout.channel.recv_exit_status()
+        # file = open(str(code), 'r') # returns 2
+        return out, err, code
+
+    # def transfer_file(self, conn):
+        
 
     def _run_cephadm(self,
                      host: str,
@@ -1214,51 +1234,17 @@ class CephadmServe:
                 # final_args = ['check-host', '--expect-hostname', 'localhost.localdomain']
                 # self.mgr.cephadm_binary_path = '/var/lib/ceph/e01157b4-ca09-11eb-816d-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190'
                 
-                cmd = []
-                cmd.append(python)
-                cmd.append(self.mgr.cephadm_binary_path)
-                cmd = cmd + final_args
+                cmd = ['python3'] + [self.mgr.cephadm_binary_path] + final_args
                 cmd = ' '.join(cmd)
                 try: 
-                    _stdin, _stdout, _stderr = conn.exec_command(cmd)
-                    if stdin:
-                        # file = open(str(stdin), 'r') # doesn't reach this
-                        _stdin.write(stdin)
-                    _stdin.channel.shutdown_write()
-                    out = _stdout.read()
-                    code = _stdout.channel.recv_exit_status()
-                    # file = open(str(code), 'r') # returns 2
-                    err = ''
-                    for line in _stderr:
-                        err += line
-                    # file = open(err, 'r') # output: python3: can't open file '/var/lib/ceph/209791a4-ca2d-11eb-be61-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190': [Errno 2] No such file or directory\n
+                    out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
                     if code == 2:
                         ls_cmd = 'ls ' + self.mgr.cephadm_binary_path
-                        ls_stdin, ls_stdout, ls_stderr = conn.exec_command(ls_cmd)
-                        out = ls_stdout.read()
-                        ls_code = ls_stdout.channel.recv_exit_status()
-                        # file = open(str(ls_code), 'r') # returns 2
-                        err = ''
-                        for line in ls_stderr:
-                            err += line
-                        # file = open(err, 'r') # output: ls: cannot access '/var/lib/ceph/ee4ef962-ca2c-11eb-901a-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190': No such file or directory\n
-                        if ls_code == 2:
+                        out_ls, err_ls, code_ls = self.execute_command(conn, ls_cmd)
+                        if code_ls == 2:
                             self._deploy_cephadm_binary_conn(conn, host)
-                            _stdin, _stdout, _stderr = conn.exec_command(cmd)
-                            if stdin:
-                                _stdin.write(stdin)
-                            _stdin.channel.shutdown_write()
-                            out = ''
-                            for line in _stdout:
-                                out += line
-                            _stdout.read()
-                            # file = open(out, 'r') 
-                            code = _stdout.channel.recv_exit_status()
-                            # file = open(str(code), 'r') # returns 0
-                            err = ''
-                            for line in _stderr:
-                                err += line
-                            # file = open(err, 'r') # the contents are: 'podman|docker (/usr/bin/docker) is present\nsystemctl is present\nlvcreate is present\nUnit chronyd.service is enabled and running\nHostname "localhost.localdomain" matches what is expected.\nHost looks OK\n'
+                            out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
+                            # file = open(err, 'r')
 
                 # try:
                 #     out, err, code = remoto.process.check(
@@ -1298,17 +1284,15 @@ class CephadmServe:
             # else:
             #     assert False, 'unsupported mode'
 
-            # self.log.debug('code: %d' % code)
-            # if out:
-            #     self.log.debug('out: %s' % '\n'.join(out))
-            # if err:
-            #     self.log.debug('err: %s' % '\n'.join(err))
-            # if code and not error_ok:
-                # raise OrchestratorError(
-                #     'cephadm exited with an error code: %d, stderr:%s' % (
-                #         code, '\n'.join(err)))
-
-            out = [out]  # what is out supposed to be? 
+            self.log.debug(f'code: {code}')
+            if out:
+                self.log.debug(f'out: {out}')
+            if err:
+                self.log.debug(f'err: {err}')
+            if code and not error_ok:
+                raise OrchestratorError(
+                    f'cephadm exited with an error code: {code}, stderr: {err}')
+            out = [out]
             return out, err, code
 
     def _get_container_image_info(self, image_name: str) -> ContainerInspectInfo:
@@ -1357,32 +1341,15 @@ class CephadmServe:
             return self._deploy_cephadm_binary_conn(conn, host)
 
     def _deploy_cephadm_binary_conn(self, conn, host: str) -> None:
-
-        cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'        
-        _stdin, _stdout, _stderr = conn.exec_command(cmd)
-        _stdout.readlines()
-        code = _stdout.channel.recv_exit_status()
-        # file = open(str(code), 'r') # returns 0
-        err = ''
-        for line in _stderr:
-            err += line
+        cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'
+        out, err, code = self.execute_command(conn, cmd)
         if code:
             msg = f"Unable to deploy the cephadm binary to {host}: {err}"
             self.log.warning(msg)
             raise OrchestratorError(msg)
 
-        cmd = f'tee - {self.mgr.cephadm_binary_path}'        
-        _stdin, _stdout, _stderr = conn.exec_command(cmd)
-        input = self.mgr._cephadm.encode('utf-8') # what is self.mgr._cephadm ? 
-        _stdin.write(input)
-        _stdin.flush()
-        _stdin.channel.shutdown_write()
-        _stdout.readlines()
-        code = _stdout.channel.recv_exit_status()
-        # file = open(str(exit_code), 'r') # returns 0
-        err = ''
-        for line in _stderr:
-            err += line
+        cmd = f'tee - {self.mgr.cephadm_binary_path}'
+        self.execute_command(conn, cmd, stdin=self.mgr._cephadm.encode('utf-8'))
         if code:
             msg = f"Unable to deploy the cephadm binary to {host}: {err}"
             self.log.warning(msg)
@@ -1462,7 +1429,6 @@ class CephadmServe:
 
             # self.log.debug(str(type(conn)))
             yield client
-        # TypeError: 'SSHClient' object is not iterable
         except TypeError as e:
             logger.exception('Failed to add host')
             log_output = log_string.getvalue()
