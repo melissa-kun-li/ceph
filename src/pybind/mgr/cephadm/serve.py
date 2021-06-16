@@ -1140,7 +1140,7 @@ class CephadmServe:
             self.log.exception(f'{msg}: {"".join(out)}')
             raise OrchestratorError(msg)
 
-    def execute_command(self, conn, cmd, stdin: Optional[str] = ""):
+    def execute_command(self, conn, cmd, stdin: Optional[bytes] = b""):
         _stdin, _stdout, _stderr = conn.exec_command(cmd)
         if stdin:
             _stdin.write(stdin)
@@ -1155,6 +1155,12 @@ class CephadmServe:
         out = out.rstrip('\n')
         code = _stdout.channel.recv_exit_status()
         return out, err, code
+
+    def check_execute_command(self, conn, cmd, stdin: Optional[bytes] = b"") -> str:
+        out, err, code = self.execute_command(conn, cmd, stdin)
+        if code != 0:
+            raise OrchestratorError(f'{cmd} failed: {err}')
+        return out
 
     def _run_cephadm(self,
                      host: str,
@@ -1216,10 +1222,7 @@ class CephadmServe:
                     self.log.debug('stdin: %s' % stdin)
 
                 cmd = 'which python3'
-                out, err, code = self.execute_command(conn, cmd)
-                if err: 
-                    raise OrchestratorError(err)
-                python = out
+                python = self.check_execute_command(conn, cmd)
 
                 # file = open(self.mgr.cephadm_binary_path, 'r') 
                 # final_args = ['check-host', '--expect-hostname', 'localhost.localdomain']
@@ -1233,7 +1236,7 @@ class CephadmServe:
                         ls_cmd = 'ls ' + self.mgr.cephadm_binary_path
                         out_ls, err_ls, code_ls = self.execute_command(conn, ls_cmd)
                         if code_ls == 2:
-                            self._deploy_cephadm_binary_conn(conn, host)
+                            self._deploy_cephadm_binary_conn(conn, host, addr)
                             out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
                             # file = open(err, 'r')
 
@@ -1328,36 +1331,23 @@ class CephadmServe:
         # Use tee (from coreutils) to create a copy of cephadm on the target machine
         self.log.info(f"Deploying cephadm binary to {host}")
         with self._remote_connection(host) as conn:
-            return self._deploy_cephadm_binary_conn(conn, host)
+        #     return self._deploy_cephadm_binary_conn(conn, host)
+            self._deploy_cephadm_binary_conn(conn, host)
 
-    def _deploy_cephadm_binary_conn(self, conn, host: str) -> None:
-        cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'
-        out, err, code = self.execute_command(conn, cmd)
-        if code:
-            msg = f"Unable to deploy the cephadm binary to {host}: {err}"
-            self.log.warning(msg)
-            raise OrchestratorError(msg)
+    def _deploy_cephadm_binary_conn(self, conn, host: str, addr: Optional[str] = None) -> None:
+        self._write_remote_file(host, self.mgr.cephadm_binary_path, self.mgr._cephadm.encode('utf-8'), addr=addr)
 
-        cmd = f'tee - {self.mgr.cephadm_binary_path}'
-        self.execute_command(conn, cmd, stdin=self.mgr._cephadm.encode('utf-8'))
-        if code:
-            msg = f"Unable to deploy the cephadm binary to {host}: {err}"
-            self.log.warning(msg)
-            raise OrchestratorError(msg)
-
-        # _out, _err, code = remoto.process.check(
-        #     conn,
-        #     ['mkdir', '-p', f'/var/lib/ceph/{self.mgr._cluster_fsid}'])
+        # cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'
+        # out, err, code = self.execute_command(conn, cmd)
         # if code:
-        #     msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+        #     msg = f"Unable to deploy the cephadm binary to {host}: {err}"
         #     self.log.warning(msg)
         #     raise OrchestratorError(msg)
-        # _out, _err, code = remoto.process.check(
-        #     conn,
-        #     ['tee', '-', self.mgr.cephadm_binary_path],
-        #     stdin=self.mgr._cephadm.encode('utf-8'))
+
+        # cmd = f'tee - {self.mgr.cephadm_binary_path}'
+        # self.execute_command(conn, cmd, stdin=self.mgr._cephadm.encode('utf-8'))
         # if code:
-        #     msg = f"Unable to deploy the cephadm binary to {host}: {_err}"
+        #     msg = f"Unable to deploy the cephadm binary to {host}: {err}"
         #     self.log.warning(msg)
         #     raise OrchestratorError(msg)
 
@@ -1365,21 +1355,24 @@ class CephadmServe:
                            host: str,
                            path: str,
                            content: bytes,
-                           mode: int,
-                           uid: int,
-                           gid: int) -> None:
-        with self._remote_connection(host) as conn:
+                           mode: Optional[int] = None,
+                           uid: Optional[int] = None,
+                           gid: Optional[int] = None,
+                           addr: Optional[str] = None,) -> None:
+        with self._remote_connection(host, addr) as conn:
             try:
                 dirname = os.path.dirname(path)
-                self.execute_command(conn, f'mkdir -p {dirname}')
+                self.check_execute_command(conn, f'mkdir -p {dirname}')
                 tmp_path = path + '.new'
-                self.execute_command(conn, f'touch {tmp_path}')
-                self.execute_command(conn, f'sudo chown -R {uid}:{gid} {tmp_path}')
-                self.execute_command(conn, f'tee - {tmp_path}', stdin=content.encode('utf-8'))
-                self.execute_command(conn, f'mv {tmp_path} {path}')
+                self.check_execute_command(conn, f'touch {tmp_path}')
+                if uid != None and gid != None and mode != None:
+                    self.check_execute_command(conn, f'sudo chown -R {uid}:{gid} {tmp_path}')
+                    self.check_execute_command(conn, f'sudo chmod {oct(mode)[2:]} {tmp_path}')
+                self.check_execute_command(conn, f'tee - {tmp_path}', stdin=content)
+                self.check_execute_command(conn, f'mv {tmp_path} {path}')
             except Exception as e:
                 msg = f"Unable to write {host}:{path}: {e}"
-                self.log.warning(msg)
+                self.log.exception(msg)
                 raise OrchestratorError(msg)
 
     @contextmanager
@@ -1420,7 +1413,6 @@ class CephadmServe:
             #                username=self.mgr.ssh_user, 
             #                key_filename=self.mgr.ssh_key)
 
-            # self.log.debug(str(type(conn)))
             yield client
         except TypeError as e:
             logger.exception('Failed to add host')
