@@ -1230,6 +1230,10 @@ class CephadmServe:
                 
                 cmd = [python, self.mgr.cephadm_binary_path] + final_args
                 cmd = ' '.join(cmd)
+
+                if '--meta-json' in cmd:
+                    file = open(cmd, 'r')
+
                 try: 
                     out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
                     if code == 2:
@@ -1412,35 +1416,21 @@ class CephadmServe:
             #                key_filename=self.mgr.ssh_key)
 
             yield client
-        except TypeError as e:
-            logger.exception('Failed to add host')
-            log_output = log_string.getvalue()
-            msg = str(e) + '\n'
-            msg += log_output
-            log_string.flush()
-            paramiko_logger.removeHandler(ch)
-            client.close()
-            raise OrchestratorError(msg)
         except OSError as e:
             paramiko_logger.removeHandler(ch)
             client.close()
-            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
+            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. Error: {str(e)}"
             raise OrchestratorError(msg)
-        except paramiko.ssh_exception.SSHException as e:
-            log_output = log_string.getvalue()
-            log_string.flush()
+        except (paramiko.ssh_exception.SSHException, paramiko.ssh_exception.AuthenticationException, paramiko.ssh_exception.BadHostKeyException) as e:
+            o = self._check_host(host)
+            if o is not None:
+                log_output = log_string.getvalue()
+                log_string.flush()
+                self.log.debug(log_output)
             paramiko_logger.removeHandler(ch)
             client.close()
-            raise OrchestratorError(log_output)
-        except paramiko.ssh_exception.AuthenticationException as e:
-            # run check host command, if check host command fails, then return captured log output into standard output
-            log_output = log_string.getvalue()
-            log_string.flush()
-            self.log.debug(log_output)
-            paramiko_logger.removeHandler(ch)
-            client.close()
-            raise
-    
+            msg = f'Failed to connect to {host} ({addr}). Error: {str(e)} {log_output}'
+            raise OrchestratorError(msg)
     
 #     @contextmanager
 #     def _remote_connection(self,

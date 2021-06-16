@@ -620,9 +620,9 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
         ssh_options = []  # type: List[str]
 
         # ssh_config
-        ssh_config_fname = self.ssh_config_file
+        self.ssh_config_fname = self.ssh_config_file
         ssh_config = self.get_store("ssh_config")
-        if ssh_config is not None or ssh_config_fname is None:
+        if ssh_config is not None or self.ssh_config_fname is None:
             if not ssh_config:
                 ssh_config = DEFAULT_SSH_CONFIG
             f = tempfile.NamedTemporaryFile(prefix='cephadm-conf-')
@@ -630,10 +630,10 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule,
             f.write(ssh_config.encode('utf-8'))
             f.flush()  # make visible to other processes
             temp_files += [f]
-            ssh_config_fname = f.name
-        if ssh_config_fname:
-            self.validate_ssh_config_fname(ssh_config_fname)
-            ssh_options += ['-F', ssh_config_fname]
+            self.ssh_config_fname = f.name
+        if self.ssh_config_fname:
+            self.validate_ssh_config_fname(self.ssh_config_fname)
+            ssh_options += ['-F', self.ssh_config_fname]
         self.ssh_config = ssh_config
 
         # identity
@@ -1417,11 +1417,8 @@ Then run the following:
             addr=addr,
             error_ok=True, no_fsid=True)
         if code:
-            # err will contain stdout and stderr, so we filter on the message text to
-            # only show the errors
-            # errors = [_i.replace("ERROR: ", "") for _i in err if _i.startswith('ERROR')]
             raise OrchestratorError('Host %s (%s) failed check(s): %s' % (
-                host, addr, err.decode()))
+                host, addr, err))
         return ip_addr
 
     def _add_host(self, spec):
