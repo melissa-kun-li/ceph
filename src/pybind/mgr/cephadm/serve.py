@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import uuid
+import os
 from collections import defaultdict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Optional, List, cast, Dict, Any, Union, Tuple, Iterator
@@ -1142,24 +1143,18 @@ class CephadmServe:
     def execute_command(self, conn, cmd, stdin: Optional[str] = ""):
         _stdin, _stdout, _stderr = conn.exec_command(cmd)
         if stdin:
-        # file = open(str(stdin), 'r')
             _stdin.write(stdin)
             _stdin.flush()
             _stdin.channel.shutdown_write()
-        out = []
+        out, err = [], []
         for line in _stdout:
             out.append(line)
-        out = ''.join(out)
-        err = []
         for line in _stderr:
             err.append(line)
-        err = ''.join(err)
+        out, err = ''.join(out), ''.join(err)
+        out = out.rstrip('\n')
         code = _stdout.channel.recv_exit_status()
-        # file = open(str(code), 'r') # returns 2
         return out, err, code
-
-    # def transfer_file(self, conn):
-        
 
     def _run_cephadm(self,
                      host: str,
@@ -1185,8 +1180,7 @@ class CephadmServe:
 
         bypass_image = ('cephadm-exporter',)
 
-        with self._remote_connection(host, addr) as tpl:
-            conn = tpl
+        with self._remote_connection(host, addr) as conn:
             assert image or entity
             # Skip the image check for daemons deployed that are not ceph containers
             if not str(entity).startswith(bypass_image):
@@ -1219,22 +1213,19 @@ class CephadmServe:
             self.log.debug('args: %s' % (' '.join(final_args)))
             if self.mgr.mode == 'root':
                 if stdin:
-                    # file = open(str(stdin), 'r')
                     self.log.debug('stdin: %s' % stdin)
 
-                # python = connr.choose_python()
-                python = 'python3'
-                # python = None
-                if not python:
-                    raise RuntimeError(
-                        'unable to find python on %s (tried %s in %s)' % (
-                            host, remotes.PYTHONS, remotes.PATH))
+                cmd = 'which python3'
+                out, err, code = self.execute_command(conn, cmd)
+                if err: 
+                    raise OrchestratorError(err)
+                python = out
 
                 # file = open(self.mgr.cephadm_binary_path, 'r') 
                 # final_args = ['check-host', '--expect-hostname', 'localhost.localdomain']
                 # self.mgr.cephadm_binary_path = '/var/lib/ceph/e01157b4-ca09-11eb-816d-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190'
                 
-                cmd = ['python3'] + [self.mgr.cephadm_binary_path] + final_args
+                cmd = [python, self.mgr.cephadm_binary_path] + final_args
                 cmd = ' '.join(cmd)
                 try: 
                     out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
@@ -1336,8 +1327,7 @@ class CephadmServe:
     def _deploy_cephadm_binary(self, host: str) -> None:
         # Use tee (from coreutils) to create a copy of cephadm on the target machine
         self.log.info(f"Deploying cephadm binary to {host}")
-        with self._remote_connection(host) as tpl:
-            conn = tpl
+        with self._remote_connection(host) as conn:
             return self._deploy_cephadm_binary_conn(conn, host)
 
     def _deploy_cephadm_binary_conn(self, conn, host: str) -> None:
@@ -1378,12 +1368,15 @@ class CephadmServe:
                            mode: int,
                            uid: int,
                            gid: int) -> None:
-        with self._remote_connection(host) as tpl:
-            conn, connr = tpl
+        with self._remote_connection(host) as conn:
             try:
-                errmsg = connr.write_file(path, content, mode, uid, gid)
-                if errmsg is not None:
-                    raise OrchestratorError(errmsg)
+                dirname = os.path.dirname(path)
+                self.execute_command(conn, f'mkdir -p {dirname}')
+                tmp_path = path + '.new'
+                self.execute_command(conn, f'touch {tmp_path}')
+                self.execute_command(conn, f'sudo chown -R {uid}:{gid} {tmp_path}')
+                self.execute_command(conn, f'tee - {tmp_path}', stdin=content.encode('utf-8'))
+                self.execute_command(conn, f'mv {tmp_path} {path}')
             except Exception as e:
                 msg = f"Unable to write {host}:{path}: {e}"
                 self.log.warning(msg)
