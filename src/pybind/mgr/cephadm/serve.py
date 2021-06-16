@@ -1236,7 +1236,7 @@ class CephadmServe:
                         ls_cmd = 'ls ' + self.mgr.cephadm_binary_path
                         out_ls, err_ls, code_ls = self.execute_command(conn, ls_cmd)
                         if code_ls == 2:
-                            self._deploy_cephadm_binary_conn(conn, host, addr)
+                            self._deploy_cephadm_binary(host, addr)
                             out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
                             # file = open(err, 'r')
 
@@ -1327,15 +1327,13 @@ class CephadmServe:
             return f"Host {host} failed to login to {url} as {username} with given password"
         return None
 
-    def _deploy_cephadm_binary(self, host: str) -> None:
+    def _deploy_cephadm_binary(self, host: str, addr: Optional[str] = None) -> None:
         # Use tee (from coreutils) to create a copy of cephadm on the target machine
         self.log.info(f"Deploying cephadm binary to {host}")
-        with self._remote_connection(host) as conn:
-        #     return self._deploy_cephadm_binary_conn(conn, host)
-            self._deploy_cephadm_binary_conn(conn, host)
-
-    def _deploy_cephadm_binary_conn(self, conn, host: str, addr: Optional[str] = None) -> None:
         self._write_remote_file(host, self.mgr.cephadm_binary_path, self.mgr._cephadm.encode('utf-8'), addr=addr)
+
+    # def _deploy_cephadm_binary_conn(self, conn, host: str, addr: Optional[str] = None) -> None:
+    #     self._write_remote_file(host, self.mgr.cephadm_binary_path, self.mgr._cephadm.encode('utf-8'), addr=addr)
 
         # cmd = f'mkdir -p /var/lib/ceph/{self.mgr._cluster_fsid}'
         # out, err, code = self.execute_command(conn, cmd)
