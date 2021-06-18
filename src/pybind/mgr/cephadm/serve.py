@@ -7,6 +7,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Optional, List, cast, Dict, Any, Union, Tuple, Iterator
 from io import StringIO
+from shlex import quote
 
 from cephadm import remotes
 
@@ -1141,6 +1142,8 @@ class CephadmServe:
             raise OrchestratorError(msg)
 
     def execute_command(self, conn, cmd, stdin: Optional[bytes] = b""):
+        cmd = " ".join(quote(x) for x in cmd)
+        # file = open(cmd, 'r')
         _stdin, _stdout, _stderr = conn.exec_command(cmd)
         if stdin:
             _stdin.write(stdin)
@@ -1221,7 +1224,7 @@ class CephadmServe:
                 if stdin:
                     self.log.debug('stdin: %s' % stdin)
 
-                cmd = 'which python3'
+                cmd = ['which', 'python3']
                 python = self.check_execute_command(conn, cmd)
 
                 # file = open(self.mgr.cephadm_binary_path, 'r') 
@@ -1229,20 +1232,21 @@ class CephadmServe:
                 # self.mgr.cephadm_binary_path = '/var/lib/ceph/e01157b4-ca09-11eb-816d-080027df1efa/cephadm.53a04d87240feff2cf4c59d31895d90f886704bddfb3c7b757f665e8366ac190'
                 
                 cmd = [python, self.mgr.cephadm_binary_path] + final_args
-                cmd = ' '.join(cmd)
 
-                if '--meta-json' in cmd:
-                    file = open(cmd, 'r')
+                # if '--meta-json' in cmd:
+                #     file = open(str(cmd), 'r')
+
+                # cmd = ' '.join(cmd)
 
                 try: 
                     out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
                     if code == 2:
-                        ls_cmd = 'ls ' + self.mgr.cephadm_binary_path
+                        ls_cmd = ['ls', self.mgr.cephadm_binary_path]
                         out_ls, err_ls, code_ls = self.execute_command(conn, ls_cmd)
                         if code_ls == 2:
                             self._deploy_cephadm_binary(host, addr)
                             out, err, code = self.execute_command(conn, cmd, stdin=stdin.encode('utf-8') if stdin is not None else None)
-                            # file = open(err, 'r')
+                            # file = open(code, 'r')
 
                 # try:
                 #     out, err, code = remoto.process.check(
@@ -1364,14 +1368,20 @@ class CephadmServe:
         with self._remote_connection(host, addr) as conn:
             try:
                 dirname = os.path.dirname(path)
-                self.check_execute_command(conn, f'mkdir -p {dirname}')
+                self.check_execute_command(conn, ['mkdir', '-p', dirname])
                 tmp_path = path + '.new'
-                self.check_execute_command(conn, f'touch {tmp_path}')
+                # self.check_execute_command(conn, f'touch {tmp_path}')
+                self.check_execute_command(conn, ['touch', tmp_path])
                 if uid != None and gid != None and mode != None:
-                    self.check_execute_command(conn, f'sudo chown -R {uid}:{gid} {tmp_path}')
-                    self.check_execute_command(conn, f'sudo chmod {oct(mode)[2:]} {tmp_path}')
-                self.check_execute_command(conn, f'tee - {tmp_path}', stdin=content)
-                self.check_execute_command(conn, f'mv {tmp_path} {path}')
+                    # shlex quote takes str or byte object, not int
+                    self.check_execute_command(conn, ['sudo', 'chown', '-R', str(uid) + ':' + str(gid), tmp_path])
+                    # self.check_execute_command(conn, f'sudo chown -R {uid}:{gid} {tmp_path}')
+                    self.check_execute_command(conn, ['sudo', 'chmod', oct(mode)[2:], tmp_path])
+                    # self.check_execute_command(conn, f'sudo chmod {oct(mode)[2:]} {tmp_path}')
+                self.check_execute_command(conn, ['tee', '-', tmp_path], stdin=content)
+                # self.check_execute_command(conn, f'tee - {tmp_path}', stdin=content)
+                self.check_execute_command(conn, ['mv', tmp_path, path])
+                # self.check_execute_command(conn, f'mv {tmp_path} {path}')
             except Exception as e:
                 msg = f"Unable to write {host}:{path}: {e}"
                 self.log.exception(msg)
@@ -1395,11 +1405,39 @@ class CephadmServe:
         self.log.debug("Opening connection to {} with ssh options '{}'".format(
             n, self.mgr._ssh_options))
 
+
         paramiko_logger = paramiko.util.logging.getLogger()
         paramiko_logger.setLevel(logging.DEBUG)
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        config = paramiko.SSHConfig()
+
+        try: 
+            with open(self.mgr.ssh_config_fname) as f:
+                config.parse(f)
+        except OSError as e:
+            msg = f'Unable to open SSH config: {str(e)}'
+            raise OrchestratorError(msg)
+        except Exception as e:
+            msg = f'Could not parse SSH config: {str(e)}'
+            raise OrchestratorError(msg)
+
+        conf = config.lookup(host)
+        # keys are normalized to lowercase
+        if conf['stricthostkeychecking'] == 'yes':
+            if 'userknownhostsfile' in conf:
+                client.load_host_keys(conf['userknownhostsfile'])
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        connect_timeout = float(conf['connecttimeout'])
+
+        # file = open(str(self.mgr._ssh_options), 'r') # -F /tmp/cephadm-conf-_v6ck_wp -i /tmp/cephadm-identity-4fkepg3k
+        # file = open(str(self.mgr.ssh_config),'r') # '\nHost *\n  User root\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  ConnectTimeout=30\n'
+
+        # client = paramiko.SSHClient()
+        # client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
             # start capturing paramiko logging
@@ -1407,9 +1445,10 @@ class CephadmServe:
             ch = logging.StreamHandler(log_string)
             ch.setLevel(logging.DEBUG)
             paramiko_logger.addHandler(ch)
-            client.connect(addr, 
+            client.connect(hostname=addr, 
                            username=self.mgr.ssh_user, 
-                           key_filename=self.mgr.tkey.name)
+                           key_filename=self.mgr.tkey.name,
+                           timeout=connect_timeout)
 
             # client.connect(addr, 
             #                username=self.mgr.ssh_user, 
@@ -1419,7 +1458,7 @@ class CephadmServe:
         except OSError as e:
             paramiko_logger.removeHandler(ch)
             client.close()
-            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. Error: {str(e)}"
+            msg = f"Can't communicate with remote host `{addr}`, possibly because python3 is not installed there. {str(e)}"
             raise OrchestratorError(msg)
         except (paramiko.ssh_exception.SSHException, paramiko.ssh_exception.AuthenticationException, paramiko.ssh_exception.BadHostKeyException) as e:
             o = self._check_host(host)
@@ -1427,9 +1466,11 @@ class CephadmServe:
                 log_output = log_string.getvalue()
                 log_string.flush()
                 self.log.debug(log_output)
+                msg = f'Failed to connect to {host} ({addr}) due to: {str(e)} {log_output}'
+            else:
+                msg = f'Failed to connect to {host} ({addr}) due to: {str(e)}'
             paramiko_logger.removeHandler(ch)
             client.close()
-            msg = f'Failed to connect to {host} ({addr}). Error: {str(e)} {log_output}'
             raise OrchestratorError(msg)
     
 #     @contextmanager
