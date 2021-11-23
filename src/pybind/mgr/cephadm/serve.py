@@ -500,7 +500,8 @@ class CephadmServe:
                                     s.get('type'), s.get('id')
                                 )
                             )
-
+                    if s.get('type') == 'tcmu-runner':
+                        managed.append(name)
                     if host not in self.mgr.inventory:
                         missing_names.append(name)
                         host_num_daemons += 1
